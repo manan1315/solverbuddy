@@ -1,3 +1,5 @@
+export const runtime = 'edge';
+
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { checkouts, creditAccounts } from "@/db/schema";
