@@ -32,21 +32,26 @@ export async function POST(req: NextRequest) {
     if (!text && !body.hasImage) return NextResponse.json({ error: "Add some text, snip a sample, or upload an image first." }, { status: 400 });
 
     // Total demo limit per device (4 questions max)
-    const allRows = await db.select().from(demoRequests).where(eq(demoRequests.deviceId, deviceId));
-    const totalCount = allRows.reduce((acc, r) => acc + (r.count || 0), 0);
-    if (totalCount >= DEMO_LIMIT) {
-      return NextResponse.json({
-        error: "Free demo limit of 4 questions reached. Subscribe to continue.",
-        rateLimited: true,
-        isLocked: true,
-        limit: DEMO_LIMIT,
-      }, { status: 429 });
-    }
+    let totalCount = 0;
+    try {
+      const allRows = await db.select().from(demoRequests).where(eq(demoRequests.deviceId, deviceId));
+      totalCount = (allRows || []).reduce((acc: number, r: any) => acc + (r.count || 0), 0);
+      if (totalCount >= DEMO_LIMIT) {
+        return NextResponse.json({
+          error: "Free demo limit of 4 questions reached. Subscribe to continue.",
+          rateLimited: true,
+          isLocked: true,
+          limit: DEMO_LIMIT,
+        }, { status: 429 });
+      }
 
-    const day = new Date().toISOString().slice(0, 10);
-    const todayRow = allRows.find((r) => r.day === day);
-    if (todayRow) await db.update(demoRequests).set({ count: todayRow.count + 1 }).where(eq(demoRequests.id, todayRow.id));
-    else await db.insert(demoRequests).values({ deviceId, day, count: 1 });
+      const day = new Date().toISOString().slice(0, 10);
+      const todayRow = (allRows || []).find((r: any) => r.day === day);
+      if (todayRow) await db.update(demoRequests).set({ count: todayRow.count + 1 }).where(eq(demoRequests.id, todayRow.id));
+      else await db.insert(demoRequests).values({ deviceId, day, count: 1 });
+    } catch (dbErr) {
+      console.warn("Demo DB error/skipped:", dbErr);
+    }
 
     const effectiveText = text || "x^2 + 5x + 6 = 0 (read from uploaded image)";
     const result = solve(effectiveText, mode, {
@@ -68,10 +73,14 @@ export async function POST(req: NextRequest) {
 
     const quotas = await applyCredits(deviceId, result.credits);
 
-    await db.insert(snips).values({
-      deviceId, inputText: effectiveText.slice(0, 4000), inputType, mode, language: String(body.language || result.detectedLanguage),
-      topic: result.topic, route: result.route, answer: (result.answer || result.hint || "").slice(0, 4000), confidence: result.confidence, credits: result.credits,
-    });
+    try {
+      await db.insert(snips).values({
+        deviceId, inputText: effectiveText.slice(0, 4000), inputType, mode, language: String(body.language || result.detectedLanguage),
+        topic: result.topic, route: result.route, answer: (result.answer || result.hint || "").slice(0, 4000), confidence: result.confidence, credits: result.credits,
+      });
+    } catch (insertErr) {
+      console.warn("DB insert snip skipped:", insertErr);
+    }
 
     const newTotal = totalCount + 1;
     return NextResponse.json({

@@ -7,19 +7,42 @@ export type AccountRow = typeof creditAccounts.$inferSelect;
 
 export async function getOrCreateAccount(deviceId: string): Promise<AccountRow> {
   const today = new Date().toISOString().slice(0, 10);
-  const existing = await db.select().from(creditAccounts).where(eq(creditAccounts.deviceId, deviceId)).limit(1);
-  if (existing.length) {
-    const acc = existing[0];
-    if (acc.lastActiveDay !== today) {
-      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-      const streak = acc.lastActiveDay === yesterday ? acc.streakDays + 1 : acc.lastActiveDay ? 1 : acc.streakDays;
-      await db.update(creditAccounts).set({ lastActiveDay: today, streakDays: streak, updatedAt: new Date() }).where(eq(creditAccounts.deviceId, deviceId));
-      return { ...acc, lastActiveDay: today, streakDays: streak };
+  try {
+    const existing = await db.select().from(creditAccounts).where(eq(creditAccounts.deviceId, deviceId)).limit(1);
+    if (existing && existing.length) {
+      const acc = existing[0];
+      if (acc.lastActiveDay !== today) {
+        const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+        const streak = acc.lastActiveDay === yesterday ? acc.streakDays + 1 : acc.lastActiveDay ? 1 : acc.streakDays;
+        await db.update(creditAccounts).set({ lastActiveDay: today, streakDays: streak, updatedAt: new Date() }).where(eq(creditAccounts.deviceId, deviceId));
+        return { ...acc, lastActiveDay: today, streakDays: streak };
+      }
+      return acc;
     }
-    return acc;
+    const inserted = await db.insert(creditAccounts).values({ deviceId, lastActiveDay: today }).returning();
+    if (inserted && inserted[0]) return inserted[0];
+  } catch (err) {
+    console.warn("DB error or no DB:", err);
   }
-  const inserted = await db.insert(creditAccounts).values({ deviceId, lastActiveDay: today }).returning();
-  return inserted[0];
+  // Safe Fallback account row for Demo/No-DB mode
+  return {
+    id: 1,
+    deviceId,
+    plan: "trial",
+    bigUsed: 0,
+    mathUsed: 0,
+    ocrUsed: 0,
+    videoUsed: 0,
+    pdfUsed: 0,
+    bonusBig: 100,
+    bonusMath: 100,
+    bonusOcr: 100,
+    bonusVideo: 100,
+    streakDays: 1,
+    lastActiveDay: today,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as AccountRow;
 }
 
 export function quotaView(acc: AccountRow) {
@@ -37,12 +60,24 @@ export function quotaView(acc: AccountRow) {
 
 export async function applyCredits(deviceId: string, credits: { big: number; math: number; ocr: number; video: number; pdf: number }) {
   const acc = await getOrCreateAccount(deviceId);
-  await db.update(creditAccounts).set({
-    bigUsed: acc.bigUsed + credits.big, mathUsed: acc.mathUsed + credits.math, ocrUsed: acc.ocrUsed + credits.ocr,
-    videoUsed: acc.videoUsed + credits.video, pdfUsed: acc.pdfUsed + credits.pdf, updatedAt: new Date(),
-  }).where(eq(creditAccounts.deviceId, deviceId));
-  const fresh = await db.select().from(creditAccounts).where(eq(creditAccounts.deviceId, deviceId)).limit(1);
-  return quotaView(fresh[0]);
+  try {
+    await db.update(creditAccounts).set({
+      bigUsed: acc.bigUsed + credits.big, mathUsed: acc.mathUsed + credits.math, ocrUsed: acc.ocrUsed + credits.ocr,
+      videoUsed: acc.videoUsed + credits.video, pdfUsed: acc.pdfUsed + credits.pdf, updatedAt: new Date(),
+    }).where(eq(creditAccounts.deviceId, deviceId));
+    const fresh = await db.select().from(creditAccounts).where(eq(creditAccounts.deviceId, deviceId)).limit(1);
+    if (fresh && fresh[0]) return quotaView(fresh[0]);
+  } catch (err) {
+    console.warn("DB error or no DB in applyCredits:", err);
+  }
+  return quotaView({
+    ...acc,
+    bigUsed: acc.bigUsed + credits.big,
+    mathUsed: acc.mathUsed + credits.math,
+    ocrUsed: acc.ocrUsed + credits.ocr,
+    videoUsed: acc.videoUsed + credits.video,
+    pdfUsed: acc.pdfUsed + credits.pdf,
+  });
 }
 
 export function exceedsQuota(acc: AccountRow, credits: { big: number; math: number; ocr: number; video: number; pdf: number }): string | null {
