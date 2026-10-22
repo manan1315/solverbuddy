@@ -20,32 +20,23 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ plan: stri
   const label = isAddon ? addon.label : `${plan.name} — ${plan.price}`;
 
   const stripeKey = process.env.STRIPE_SECRET_KEY;
-  if (stripeKey) {
-    const priceEnv = planId === "trial" ? process.env.STRIPE_PRICE_TRIAL : planId === "monthly" ? process.env.STRIPE_PRICE_MONTHLY : planId === "semester" ? process.env.STRIPE_PRICE_SEMESTER : undefined;
-    try {
-      const form = new URLSearchParams();
-      form.set("mode", planId === "trial" || isAddon ? "payment" : "subscription");
-      if (priceEnv && !isAddon) { form.set("line_items[0][price]", priceEnv); form.set("line_items[0][quantity]", "1"); }
-      else { form.set("line_items[0][price_data][currency]", "usd"); form.set("line_items[0][price_data][product_data][name]", `SolverBuddy ${label}`); form.set("line_items[0][price_data][unit_amount]", String(amount)); form.set("line_items[0][quantity]", "1"); if (form.get("mode") === "subscription") form.set("line_items[0][price_data][recurring][interval]", planId === "semester" ? "month" : "month"), form.set("line_items[0][price_data][recurring][interval_count]", planId === "semester" ? "3" : "1"); }
-      form.set("success_url", `${origin}/success?plan=${planId}&session_id={CHECKOUT_SESSION_ID}`);
-      form.set("cancel_url", `${origin}/cancel?plan=${planId}`);
-      const r = await fetch("https://api.stripe.com/v1/checkout/sessions", { method: "POST", headers: { Authorization: `Bearer ${stripeKey}`, "Content-Type": "application/x-www-form-urlencoded" }, body: form });
-      const j = (await r.json()) as { id?: string; url?: string };
-      if (j.url) {
-        await db.insert(checkouts).values({ deviceId, plan: planId, amountCents: amount, status: "stripe_pending", stripeSessionId: j.id || "" });
-        return NextResponse.json({ url: j.url, stripe: true });
-      }
-    } catch (e) { console.error(\"Stripe session error:\", e); /* fall through to mock */ }
+  if (!stripeKey) {
+    return NextResponse.json({ error: "Payments not configured. Please add STRIPE_SECRET_KEY." }, { status: 500 });
   }
-
-  // Mock checkout — applies instantly so quotas update
-  await db.insert(checkouts).values({ deviceId, plan: planId, amountCents: amount, status: "mock_completed" });
-  const acc = await getOrCreateAccount(deviceId);
-  if (isAddon) {
-    const field = addon.field as "bonusBig" | "bonusMath" | "bonusOcr" | "bonusVideo";
-    await db.update(creditAccounts).set({ [field]: acc[field] + addon.amount, updatedAt: new Date() }).where(eq(creditAccounts.deviceId, deviceId));
-  } else {
-    await db.update(creditAccounts).set({ plan: plan.id, updatedAt: new Date() }).where(eq(creditAccounts.deviceId, deviceId));
-  }
-  return NextResponse.json({ url: `/success?mock=true&plan=${planId}`, stripe: false });
+  const priceEnv = planId === "trial" ? process.env.STRIPE_PRICE_TRIAL : planId === "monthly" ? process.env.STRIPE_PRICE_MONTHLY : planId === "semester" ? process.env.STRIPE_PRICE_SEMESTER : undefined;
+  try {
+    const form = new URLSearchParams();
+    form.set("mode", planId === "trial" || isAddon ? "payment" : "subscription");
+    if (priceEnv && !isAddon) { form.set("line_items[0][price]", priceEnv); form.set("line_items[0][quantity]", "1"); }
+    else { form.set("line_items[0][price_data][currency]", "usd"); form.set("line_items[0][price_data][product_data][name]", `SolverBuddy ${label}`); form.set("line_items[0][price_data][unit_amount]", String(amount)); form.set("line_items[0][quantity]", "1"); if (form.get("mode") === "subscription") form.set("line_items[0][price_data][recurring][interval]", planId === "semester" ? "month" : "month"), form.set("line_items[0][price_data][recurring][interval_count]", planId === "semester" ? "3" : "1"); }
+    form.set("success_url", `${origin}/success?plan=${planId}&session_id={CHECKOUT_SESSION_ID}`);
+    form.set("cancel_url", `${origin}/cancel?plan=${planId}`);
+    const r = await fetch("https://api.stripe.com/v1/checkout/sessions", { method: "POST", headers: { Authorization: `Bearer ${stripeKey}`, "Content-Type": "application/x-www-form-urlencoded" }, body: form });
+    const j = (await r.json()) as { id?: string; url?: string };
+    if (j.url) {
+      await db.insert(checkouts).values({ deviceId, plan: planId, amountCents: amount, status: "stripe_pending", stripeSessionId: j.id || "" });
+      return NextResponse.json({ url: j.url, stripe: true });
+    }
+    throw new Error("Failed to create Stripe session");
+  } catch (e) { console.error("Stripe session error:", e); return NextResponse.json({ error: "Payment initiation failed." }, { status: 500 }); }
 }
