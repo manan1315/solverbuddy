@@ -35,7 +35,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ plan: stri
         await db.insert(checkouts).values({ deviceId, plan: planId, amountCents: amount, status: "stripe_pending", stripeSessionId: j.id || "" });
         return NextResponse.json({ url: j.url, stripe: true });
       }
-    } catch { /* fall through to mock */ }
+    } catch (e) { console.error(\"Stripe session error:\", e); /* fall through to mock */ }
   }
 
   // Mock checkout — applies instantly so quotas update
